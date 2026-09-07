@@ -22,24 +22,55 @@ export default function App() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
 
+  // Режим клиента
+  const [clientProjectId, setClientProjectId] = useState<string | null>(null);
+  const [clientProject, setClientProject] = useState<Project | null>(null);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  // Форма
   const [showForm, setShowForm] = useState(false);
   const [newTitle, setNewTitle] = useState('');
   const [newClient, setNewClient] = useState('');
   const [newLink, setNewLink] = useState('');
 
   useEffect(() => {
-    const tg = window.Telegram?.WebApp;
-    if (tg) {
-      tg.ready();
-      tg.expand();
-      if (tg.initDataUnsafe?.user?.first_name) {
-        setUserName(tg.initDataUnsafe.user.first_name);
-      }
-    }
+    // 1. Проверяем, открыта ли страница по клиентской ссылке (?project=ID)
+    const params = new URLSearchParams(window.location.search);
+    const projectIdParam = params.get('project');
 
-    fetchProjects();
+    if (projectIdParam) {
+      setClientProjectId(projectIdParam);
+      fetchSingleProject(projectIdParam);
+    } else {
+      // 2. Обычный режим исполнителя
+      const tg = window.Telegram?.WebApp;
+      if (tg) {
+        tg.ready();
+        tg.expand();
+        if (tg.initDataUnsafe?.user?.first_name) {
+          setUserName(tg.initDataUnsafe.user.first_name);
+        }
+      }
+      fetchProjects();
+    }
   }, []);
 
+  // Загрузить один проект для клиента
+  const fetchSingleProject = async (id: string) => {
+    setLoading(true);
+    const { data, error } = await supabase
+      .from('projects')
+      .select('*')
+      .eq('id', id)
+      .single();
+
+    if (!error && data) {
+      setClientProject(data as Project);
+    }
+    setLoading(false);
+  };
+
+  // Загрузить все проекты для исполнителя
   const fetchProjects = async () => {
     setLoading(true);
     const { data, error } = await supabase
@@ -78,37 +109,119 @@ export default function App() {
     }
   };
 
-  // Изменение статуса проекта
-  const handleStatusChange = async (id: string, currentStatus: Project['status']) => {
-    const statusMap: Record<Project['status'], Project['status']> = {
-      'In Progress': 'Review',
-      'Review': 'Done',
-      'Done': 'In Progress',
-    };
-
-    const nextStatus = statusMap[currentStatus];
-
+  const handleStatusChange = async (id: string, newStatus: Project['status']) => {
     const { error } = await supabase
       .from('projects')
-      .update({ status: nextStatus })
+      .update({ status: newStatus })
       .eq('id', id);
 
     if (!error) {
-      setProjects(
-        projects.map((p) => (p.id === id ? { ...p, status: nextStatus } : p))
-      );
+      if (clientProject) {
+        setClientProject({ ...clientProject, status: newStatus });
+      } else {
+        setProjects(
+          projects.map((p) => (p.id === id ? { ...p, status: newStatus } : p))
+        );
+      }
     }
   };
 
-  // Удаление проекта
   const handleDeleteProject = async (id: string) => {
     const { error } = await supabase.from('projects').delete().eq('id', id);
-
     if (!error) {
       setProjects(projects.filter((p) => p.id !== id));
     }
   };
 
+  // Копирование ссылки для клиента
+  const handleCopyLink = (id: string) => {
+    const shareUrl = `${window.location.origin}${window.location.pathname}?project=${id}`;
+    navigator.clipboard.writeText(shareUrl);
+    setCopiedId(id);
+    setTimeout(() => setCopiedId(null), 2000);
+  };
+
+  // ==================== РЕЖИМ КЛИЕНТА ====================
+  if (clientProjectId) {
+    return (
+      <div className="min-h-screen bg-slate-900 text-slate-100 p-4 font-sans select-none flex flex-col justify-center items-center">
+        <div className="w-full max-w-md bg-slate-800/90 border border-slate-700/60 rounded-2xl p-6 shadow-xl">
+          <div className="text-center mb-6">
+            <span className="text-xs uppercase tracking-widest text-indigo-400 font-semibold block mb-1">
+              ClientFlow Portal
+            </span>
+            <h1 className="text-xl font-bold text-white">Согласование проекта</h1>
+          </div>
+
+          {loading ? (
+            <p className="text-xs text-slate-400 text-center py-6">Загрузка данных проекта...</p>
+          ) : !clientProject ? (
+            <div className="text-center py-6">
+              <p className="text-sm text-slate-300">Проект не найден или удален.</p>
+            </div>
+          ) : (
+            <div className="space-y-5">
+              <div className="bg-slate-900/60 p-4 rounded-xl border border-slate-800">
+                <p className="text-xs text-slate-400 mb-1">Проект:</p>
+                <h2 className="text-lg font-semibold text-white mb-3">{clientProject.title}</h2>
+
+                <p className="text-xs text-slate-400 mb-1">Заказчик:</p>
+                <p className="text-sm text-slate-200 mb-3">{clientProject.client_name}</p>
+
+                <p className="text-xs text-slate-400 mb-1">Текущий статус:</p>
+                <span
+                  className={`inline-block text-xs px-2.5 py-1 rounded-full font-medium ${
+                    clientProject.status === 'Review'
+                      ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                      : clientProject.status === 'Done'
+                      ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                      : 'bg-blue-500/10 text-blue-400 border border-blue-500/20'
+                  }`}
+                >
+                  {clientProject.status === 'Review'
+                    ? 'На согласовании'
+                    : clientProject.status === 'Done'
+                    ? 'Согласовано'
+                    : 'В работе'}
+                </span>
+              </div>
+
+              {clientProject.link !== '#' && (
+                <a
+                  href={clientProject.link}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="block w-full text-center bg-indigo-600 hover:bg-indigo-500 text-white font-medium py-2.5 rounded-xl text-sm transition-colors"
+                >
+                  Открыть результат работы ↗
+                </a>
+              )}
+
+              <div className="pt-2 space-y-2">
+                {clientProject.status !== 'Done' ? (
+                  <button
+                    onClick={() => handleStatusChange(clientProject.id, 'Done')}
+                    className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-semibold py-2.5 rounded-xl text-sm transition-colors"
+                  >
+                    Принять и согласовать
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => handleStatusChange(clientProject.id, 'Review')}
+                    className="w-full bg-amber-600/80 hover:bg-amber-500 text-white font-semibold py-2.5 rounded-xl text-sm transition-colors"
+                  >
+                    Вернуть на доработку
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // ==================== РЕЖИМ ИСПОЛНИТЕЛИ ====================
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100 p-4 font-sans select-none">
       <header className="mb-6 flex justify-between items-center border-b border-slate-800 pb-4">
@@ -152,10 +265,18 @@ export default function App() {
                 >
                   <div className="flex justify-between items-start mb-2">
                     <h3 className="font-semibold text-base text-white pr-2">{project.title}</h3>
-                    
-                    {/* Кнопка смены статуса */}
+
                     <button
-                      onClick={() => handleStatusChange(project.id, project.status)}
+                      onClick={() =>
+                        handleStatusChange(
+                          project.id,
+                          project.status === 'In Progress'
+                            ? 'Review'
+                            : project.status === 'Review'
+                            ? 'Done'
+                            : 'In Progress'
+                        )
+                      }
                       className={`text-xs px-2.5 py-1 rounded-full font-medium transition-opacity active:opacity-75 ${
                         project.status === 'Review'
                           ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
@@ -189,8 +310,14 @@ export default function App() {
                     )}
                   </div>
 
-                  {/* Кнопка удаления */}
-                  <div className="mt-3 pt-3 border-t border-slate-700/40 flex justify-end">
+                  <div className="mt-4 pt-3 border-t border-slate-700/40 flex justify-between items-center">
+                    <button
+                      onClick={() => handleCopyLink(project.id)}
+                      className="text-xs font-medium text-indigo-400 hover:text-indigo-300 transition-colors"
+                    >
+                      {copiedId === project.id ? '✓ Ссылка скопирована' : 'Скопировать ссылку для клиента'}
+                    </button>
+
                     <button
                       onClick={() => handleDeleteProject(project.id)}
                       className="text-xs text-rose-400 hover:text-rose-300 transition-colors"
