@@ -40,7 +40,6 @@ export default function App() {
     fetchProjects();
   }, []);
 
-  // Загрузка проектов из Supabase
   const fetchProjects = async () => {
     setLoading(true);
     const { data, error } = await supabase
@@ -54,7 +53,6 @@ export default function App() {
     setLoading(false);
   };
 
-  // Создание проекта в Supabase
   const handleCreateProject = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newTitle.trim()) return;
@@ -77,6 +75,37 @@ export default function App() {
       setNewClient('');
       setNewLink('');
       setShowForm(false);
+    }
+  };
+
+  // Изменение статуса проекта
+  const handleStatusChange = async (id: string, currentStatus: Project['status']) => {
+    const statusMap: Record<Project['status'], Project['status']> = {
+      'In Progress': 'Review',
+      'Review': 'Done',
+      'Done': 'In Progress',
+    };
+
+    const nextStatus = statusMap[currentStatus];
+
+    const { error } = await supabase
+      .from('projects')
+      .update({ status: nextStatus })
+      .eq('id', id);
+
+    if (!error) {
+      setProjects(
+        projects.map((p) => (p.id === id ? { ...p, status: nextStatus } : p))
+      );
+    }
+  };
+
+  // Удаление проекта
+  const handleDeleteProject = async (id: string) => {
+    const { error } = await supabase.from('projects').delete().eq('id', id);
+
+    if (!error) {
+      setProjects(projects.filter((p) => p.id !== id));
     }
   };
 
@@ -122,9 +151,12 @@ export default function App() {
                   className="bg-slate-800/80 border border-slate-700/60 rounded-xl p-4"
                 >
                   <div className="flex justify-between items-start mb-2">
-                    <h3 className="font-semibold text-base text-white">{project.title}</h3>
-                    <span
-                      className={`text-xs px-2.5 py-1 rounded-full font-medium ${
+                    <h3 className="font-semibold text-base text-white pr-2">{project.title}</h3>
+                    
+                    {/* Кнопка смены статуса */}
+                    <button
+                      onClick={() => handleStatusChange(project.id, project.status)}
+                      className={`text-xs px-2.5 py-1 rounded-full font-medium transition-opacity active:opacity-75 ${
                         project.status === 'Review'
                           ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
                           : project.status === 'Done'
@@ -137,7 +169,7 @@ export default function App() {
                         : project.status === 'Done'
                         ? 'Согласовано'
                         : 'В работе'}
-                    </span>
+                    </button>
                   </div>
 
                   <div className="text-xs text-slate-400 space-y-1 mt-3">
@@ -155,6 +187,16 @@ export default function App() {
                         </a>
                       </p>
                     )}
+                  </div>
+
+                  {/* Кнопка удаления */}
+                  <div className="mt-3 pt-3 border-t border-slate-700/40 flex justify-end">
+                    <button
+                      onClick={() => handleDeleteProject(project.id)}
+                      className="text-xs text-rose-400 hover:text-rose-300 transition-colors"
+                    >
+                      Удалить
+                    </button>
                   </div>
                 </div>
               ))}
