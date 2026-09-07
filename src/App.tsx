@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
+import { supabase } from './supabase';
 
-// Объявляем глобальный объект Telegram для TypeScript
 declare global {
   interface Window {
     Telegram?: {
@@ -12,29 +12,15 @@ declare global {
 interface Project {
   id: string;
   title: string;
-  clientName: string;
+  client_name: string;
   status: 'In Progress' | 'Review' | 'Done';
   link: string;
 }
 
 export default function App() {
   const [userName, setUserName] = useState<string>('Пользователь');
-  const [projects, setProjects] = useState<Project[]>([
-    {
-      id: '1',
-      title: 'Дизайн лендинга',
-      clientName: 'Алексей',
-      status: 'Review',
-      link: 'https://figma.com',
-    },
-    {
-      id: '2',
-      title: 'Разработка Telegram-бота',
-      clientName: 'Мария',
-      status: 'In Progress',
-      link: 'https://github.com',
-    },
-  ]);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [loading, setLoading] = useState<boolean>(true);
 
   const [showForm, setShowForm] = useState(false);
   const [newTitle, setNewTitle] = useState('');
@@ -50,30 +36,52 @@ export default function App() {
         setUserName(tg.initDataUnsafe.user.first_name);
       }
     }
+
+    fetchProjects();
   }, []);
 
-  const handleCreateProject = (e: React.FormEvent) => {
+  // Загрузка проектов из Supabase
+  const fetchProjects = async () => {
+    setLoading(true);
+    const { data, error } = await supabase
+      .from('projects')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (!error && data) {
+      setProjects(data as Project[]);
+    }
+    setLoading(false);
+  };
+
+  // Создание проекта в Supabase
+  const handleCreateProject = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newTitle.trim()) return;
 
-    const newProj: Project = {
-      id: Date.now().toString(),
-      title: newTitle,
-      clientName: newClient || 'Заказчик',
-      status: 'In Progress',
-      link: newLink || '#',
-    };
+    const { data, error } = await supabase
+      .from('projects')
+      .insert([
+        {
+          title: newTitle,
+          client_name: newClient || 'Заказчик',
+          status: 'In Progress',
+          link: newLink || '#',
+        },
+      ])
+      .select();
 
-    setProjects([newProj, ...projects]);
-    setNewTitle('');
-    setNewClient('');
-    setNewLink('');
-    setShowForm(false);
+    if (!error && data) {
+      setProjects([data[0] as Project, ...projects]);
+      setNewTitle('');
+      setNewClient('');
+      setNewLink('');
+      setShowForm(false);
+    }
   };
 
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100 p-4 font-sans select-none">
-      {/* Шапка */}
       <header className="mb-6 flex justify-between items-center border-b border-slate-800 pb-4">
         <div>
           <h1 className="text-xl font-bold tracking-tight text-white">ClientFlow</h1>
@@ -85,7 +93,6 @@ export default function App() {
         </div>
       </header>
 
-      {/* Контент */}
       {!showForm ? (
         <main>
           <div className="flex justify-between items-center mb-4">
@@ -100,50 +107,59 @@ export default function App() {
             </button>
           </div>
 
-          <div className="space-y-3">
-            {projects.map((project) => (
-              <div
-                key={project.id}
-                className="bg-slate-800/80 border border-slate-700/60 rounded-xl p-4"
-              >
-                <div className="flex justify-between items-start mb-2">
-                  <h3 className="font-semibold text-base text-white">{project.title}</h3>
-                  <span
-                    className={`text-xs px-2.5 py-1 rounded-full font-medium ${
-                      project.status === 'Review'
-                        ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+          {loading ? (
+            <p className="text-xs text-slate-500 text-center py-8">Загрузка проектов...</p>
+          ) : projects.length === 0 ? (
+            <div className="bg-slate-800/40 border border-dashed border-slate-700/60 rounded-xl p-8 text-center">
+              <p className="text-sm text-slate-400 mb-1">Проектов пока нет</p>
+              <p className="text-xs text-slate-500">Нажми «+ Новый проект», чтобы добавить первый</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {projects.map((project) => (
+                <div
+                  key={project.id}
+                  className="bg-slate-800/80 border border-slate-700/60 rounded-xl p-4"
+                >
+                  <div className="flex justify-between items-start mb-2">
+                    <h3 className="font-semibold text-base text-white">{project.title}</h3>
+                    <span
+                      className={`text-xs px-2.5 py-1 rounded-full font-medium ${
+                        project.status === 'Review'
+                          ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                          : project.status === 'Done'
+                          ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                          : 'bg-blue-500/10 text-blue-400 border border-blue-500/20'
+                      }`}
+                    >
+                      {project.status === 'Review'
+                        ? 'На согласовании'
                         : project.status === 'Done'
-                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                        : 'bg-blue-500/10 text-blue-400 border border-blue-500/20'
-                    }`}
-                  >
-                    {project.status === 'Review'
-                      ? 'На согласовании'
-                      : project.status === 'Done'
-                      ? 'Согласовано'
-                      : 'В работе'}
-                  </span>
-                </div>
+                        ? 'Согласовано'
+                        : 'В работе'}
+                    </span>
+                  </div>
 
-                <div className="text-xs text-slate-400 space-y-1 mt-3">
-                  <p>Заказчик: <span className="text-slate-200">{project.clientName}</span></p>
-                  {project.link !== '#' && (
-                    <p className="truncate">
-                      Ссылка:{' '}
-                      <a
-                        href={project.link}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-indigo-400 underline"
-                      >
-                        {project.link}
-                      </a>
-                    </p>
-                  )}
+                  <div className="text-xs text-slate-400 space-y-1 mt-3">
+                    <p>Заказчик: <span className="text-slate-200">{project.client_name}</span></p>
+                    {project.link !== '#' && (
+                      <p className="truncate">
+                        Ссылка:{' '}
+                        <a
+                          href={project.link}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-indigo-400 underline"
+                        >
+                          {project.link}
+                        </a>
+                      </p>
+                    )}
+                  </div>
                 </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </main>
       ) : (
         <main className="bg-slate-800/80 border border-slate-700/60 rounded-xl p-4">
