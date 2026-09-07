@@ -17,6 +17,9 @@ interface Project {
   link: string;
 }
 
+// Фиксированный домен твоего приложения на Vercel
+const APP_DOMAIN = 'https://clientflow-app-indol.vercel.app';
+
 export default function App() {
   const [userName, setUserName] = useState<string>('Пользователь');
   const [projects, setProjects] = useState<Project[]>([]);
@@ -34,7 +37,7 @@ export default function App() {
   const [newLink, setNewLink] = useState('');
 
   useEffect(() => {
-    // 1. Проверяем, открыта ли страница по клиентской ссылке (?project=ID)
+    // 1. Проверяем наличие параметра ?project=ID в URL
     const params = new URLSearchParams(window.location.search);
     const projectIdParam = params.get('project');
 
@@ -42,7 +45,7 @@ export default function App() {
       setClientProjectId(projectIdParam);
       fetchSingleProject(projectIdParam);
     } else {
-      // 2. Обычный режим исполнителя
+      // 2. Обычный режим исполнителя в Telegram
       const tg = window.Telegram?.WebApp;
       if (tg) {
         tg.ready();
@@ -55,22 +58,27 @@ export default function App() {
     }
   }, []);
 
-  // Загрузить один проект для клиента
+  // Безопасная загрузка одного проекта для клиента
   const fetchSingleProject = async (id: string) => {
     setLoading(true);
-    const { data, error } = await supabase
-      .from('projects')
-      .select('*')
-      .eq('id', id)
-      .single();
+    try {
+      const { data, error } = await supabase
+        .from('projects')
+        .select('*')
+        .eq('id', id)
+        .maybeSingle();
 
-    if (!error && data) {
-      setClientProject(data as Project);
+      if (!error && data) {
+        setClientProject(data as Project);
+      }
+    } catch (err) {
+      console.error('Ошибка загрузки проекта:', err);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
-  // Загрузить все проекты для исполнителя
+  // Загрузка всех проектов для исполнителя
   const fetchProjects = async () => {
     setLoading(true);
     const { data, error } = await supabase
@@ -133,12 +141,36 @@ export default function App() {
     }
   };
 
-  // Копирование ссылки для клиента
+  // Надежное копирование ссылки для Telegram WebApp
   const handleCopyLink = (id: string) => {
-    const shareUrl = `${window.location.origin}${window.location.pathname}?project=${id}`;
-    navigator.clipboard.writeText(shareUrl);
-    setCopiedId(id);
-    setTimeout(() => setCopiedId(null), 2000);
+    const shareUrl = `${APP_DOMAIN}/?project=${id}`;
+
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard
+        .writeText(shareUrl)
+        .then(() => {
+          setCopiedId(id);
+          setTimeout(() => setCopiedId(null), 2000);
+        })
+        .catch(() => fallbackCopy(shareUrl, id));
+    } else {
+      fallbackCopy(shareUrl, id);
+    }
+  };
+
+  const fallbackCopy = (text: string, id: string) => {
+    try {
+      const textArea = document.createElement('textarea');
+      textArea.value = text;
+      document.body.appendChild(textArea);
+      textArea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textArea);
+      setCopiedId(id);
+      setTimeout(() => setCopiedId(null), 2000);
+    } catch (e) {
+      prompt('Скопируйте ссылку вручную:', text);
+    }
   };
 
   // ==================== РЕЖИМ КЛИЕНТА ====================
@@ -221,7 +253,7 @@ export default function App() {
     );
   }
 
-  // ==================== РЕЖИМ ИСПОЛНИТЕЛИ ====================
+  // ==================== РЕЖИМ ИСПОЛНИТЕЛЯ ====================
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100 p-4 font-sans select-none">
       <header className="mb-6 flex justify-between items-center border-b border-slate-800 pb-4">
