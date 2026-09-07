@@ -15,13 +15,14 @@ interface Project {
   client_name: string;
   status: 'In Progress' | 'Review' | 'Done';
   link: string;
+  user_id?: string;
 }
 
-// Фиксированный домен твоего приложения на Vercel
 const APP_DOMAIN = 'https://clientflow-app-indol.vercel.app';
 
 export default function App() {
   const [userName, setUserName] = useState<string>('Пользователь');
+  const [userId, setUserId] = useState<string | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
 
@@ -37,7 +38,6 @@ export default function App() {
   const [newLink, setNewLink] = useState('');
 
   useEffect(() => {
-    // 1. Проверяем наличие параметра ?project=ID в URL
     const params = new URLSearchParams(window.location.search);
     const projectIdParam = params.get('project');
 
@@ -45,20 +45,28 @@ export default function App() {
       setClientProjectId(projectIdParam);
       fetchSingleProject(projectIdParam);
     } else {
-      // 2. Обычный режим исполнителя в Telegram
+      let currentUserId: string | null = null;
       const tg = window.Telegram?.WebApp;
+
       if (tg) {
         tg.ready();
         tg.expand();
-        if (tg.initDataUnsafe?.user?.first_name) {
-          setUserName(tg.initDataUnsafe.user.first_name);
+        if (tg.initDataUnsafe?.user) {
+          if (tg.initDataUnsafe.user.first_name) {
+            setUserName(tg.initDataUnsafe.user.first_name);
+          }
+          if (tg.initDataUnsafe.user.id) {
+            currentUserId = String(tg.initDataUnsafe.user.id);
+            setUserId(currentUserId);
+          }
         }
       }
-      fetchProjects();
+
+      fetchProjects(currentUserId);
     }
   }, []);
 
-  // Безопасная загрузка одного проекта для клиента
+  // Загрузка одного проекта для клиента по ID
   const fetchSingleProject = async (id: string) => {
     setLoading(true);
     try {
@@ -78,13 +86,20 @@ export default function App() {
     }
   };
 
-  // Загрузка всех проектов для исполнителя
-  const fetchProjects = async () => {
+  // Загрузка проектов текущего пользователя
+  const fetchProjects = async (uid: string | null) => {
     setLoading(true);
-    const { data, error } = await supabase
+    let query = supabase
       .from('projects')
       .select('*')
       .order('created_at', { ascending: false });
+
+    // Если есть ID пользователя, фильтруем по нему
+    if (uid) {
+      query = query.eq('user_id', uid);
+    }
+
+    const { data, error } = await query;
 
     if (!error && data) {
       setProjects(data as Project[]);
@@ -104,6 +119,7 @@ export default function App() {
           client_name: newClient || 'Заказчик',
           status: 'In Progress',
           link: newLink || '#',
+          user_id: userId || 'demo_user',
         },
       ])
       .select();
@@ -141,7 +157,6 @@ export default function App() {
     }
   };
 
-  // Надежное копирование ссылки для Telegram WebApp
   const handleCopyLink = (id: string) => {
     const shareUrl = `${APP_DOMAIN}/?project=${id}`;
 
