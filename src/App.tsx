@@ -18,10 +18,17 @@ interface Project {
   user_id?: string;
 }
 
+interface Comment {
+  id: string;
+  project_id: string;
+  author: 'client' | 'executor';
+  text: string;
+  created_at: string;
+}
+
 const APP_DOMAIN = 'https://clientflow-app-indol.vercel.app';
 
 export default function App() {
-  // === Подтягиваем токен из .env ===
   const BOT_TOKEN = import.meta.env.VITE_TELEGRAM_BOT_TOKEN;
 
   const [userName, setUserName] = useState<string>('Пользователь');
@@ -34,25 +41,24 @@ export default function App() {
   const [clientProject, setClientProject] = useState<Project | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
+  // Чат / Комментарии
+  const [comments, setComments] = useState<Comment[]>([]);
+  const [newCommentText, setNewCommentText] = useState('');
+  const [sendingComment, setSendingComment] = useState(false);
+  const [expandedProjectId, setExpandedProjectId] = useState<string | null>(null); // <-- Новое состояние для исполнителя
+
   // Форма
   const [showForm, setShowForm] = useState(false);
   const [newTitle, setNewTitle] = useState('');
   const [newClient, setNewClient] = useState('');
   const [newLink, setNewLink] = useState('');
 
-  // === Функция отправки уведомлений в Telegram ===
+  // Отправка уведомления в Telegram
   const sendTelegramNotification = async (chatId: string | undefined, text: string) => {
-    console.log("📢 Попытка отправить уведомление...");
-    console.log("🔑 Токен:", BOT_TOKEN ? "На месте" : "ПУСТО! (Переменная не подхватилась)");
-    console.log("👤 Telegram ID получателя:", chatId);
-
-    if (!BOT_TOKEN || !chatId || chatId === 'demo_user') {
-      console.warn("❌ Отмена: нет токена, нет ID или ID тестовый.");
-      return;
-    }
+    if (!BOT_TOKEN || !chatId || chatId === 'demo_user') return;
 
     try {
-      const response = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+      await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -61,12 +67,8 @@ export default function App() {
           parse_mode: 'HTML',
         }),
       });
-
-      const result = await response.json();
-      console.log("📨 Ответ от Telegram сервера:", result);
-      
     } catch (err) {
-      console.error('❌ Ошибка сети при отправке:', err);
+      console.error('Ошибка отправки уведомления:', err);
     }
   };
 
@@ -77,6 +79,7 @@ export default function App() {
     if (projectIdParam) {
       setClientProjectId(projectIdParam);
       fetchSingleProject(projectIdParam);
+      fetchComments(projectIdParam);
     } else {
       let currentUserId: string | null = null;
       const tg = window.Telegram?.WebApp;
@@ -94,7 +97,6 @@ export default function App() {
           }
         }
       }
-
       fetchProjects(currentUserId);
     }
   }, []);
@@ -102,39 +104,89 @@ export default function App() {
   const fetchSingleProject = async (id: string) => {
     setLoading(true);
     try {
-      const { data, error } = await supabase
-        .from('projects')
-        .select('*')
-        .eq('id', id)
-        .maybeSingle();
-
-      if (!error && data) {
-        setClientProject(data as Project);
-      }
-    } catch (err) {
-      console.error('Ошибка загрузки проекта:', err);
+      const { data } = await supabase.from('projects').select('*').eq('id', id).maybeSingle();
+      if (data) setClientProject(data as Project);
     } finally {
       setLoading(false);
     }
   };
 
+  const fetchComments = async (projectId: string) => {
+    const { data } = await supabase
+      .from('comments')
+      .select('*')
+      .eq('project_id', projectId)
+      .order('created_at', { ascending: true });
+
+    if (data) setComments(data as Comment[]);
+  };
+
   const fetchProjects = async (uid: string | null) => {
     setLoading(true);
-    let query = supabase
-      .from('projects')
-      .select('*')
-      .order('created_at', { ascending: false });
+    let query = supabase.from('projects').select('*').order('created_at', { ascending: false });
+    if (uid) query = query.eq('user_id', uid);
 
-    if (uid) {
-      query = query.eq('user_id', uid);
+    const { data } = await query;
+    if (data) setProjects(data as Project[]);
+    setLoading(false);
+  };
+
+  const toggleComments = (projectId: string) => {
+    if (expandedProjectId === projectId) {
+      setExpandedProjectId(null);
+      setComments([]);
+    } else {
+      setExpandedProjectId(projectId);
+      fetchComments(projectId);
     }
+  };
 
-    const { data, error } = await query;
+  const handleSendComment = async (author: 'client' | 'executor', targetProjectId: string) => {
+    if (!newCommentText.trim() || sendingComment) return;
+
+    setSendingComment(true);
+    const textToSend = newCommentText.trim();
+
+    const { data, error } = await supabase
+      .from('comments')
+      .insert([{ project_id: targetProjectId, author: author, text: textToSend }])
+      .select();
 
     if (!error && data) {
-      setProjects(data as Project[]);
+      setComments([...comments, data[0] as Comment]);
+      setNewCommentText('');
+
+      // Уведомление исполнителю, если пишет клиент
+      if (author === 'client' && clientProject) {
+        const msg = `💬 <b>Новый комментарий по проекту "${clientProject.title}"</b>\n\n<i>"${textToSend}"</i>`;
+        await sendTelegramNotification(clientProject.user_id, msg);
+      }
     }
-    setLoading(false);
+    setSendingComment(false);
+  };
+
+  const handleStatusChange = async (id: string, newStatus: Project['status']) => {
+    const { error } = await supabase.from('projects').update({ status: newStatus }).eq('id', id);
+
+    if (!error) {
+      const targetProject = clientProject || projects.find((p) => p.id === id);
+
+      if (clientProject) {
+        setClientProject({ ...clientProject, status: newStatus });
+      } else {
+        setProjects(projects.map((p) => (p.id === id ? { ...p, status: newStatus } : p)));
+      }
+
+      if (targetProject && clientProject) {
+        let message = '';
+        if (newStatus === 'Done') {
+          message = `✅ <b>Проект согласован!</b>\n\nЗаказчик принял проект: <b>${targetProject.title}</b>`;
+        } else if (newStatus === 'Review') {
+          message = `⚠️ <b>Проект возвращен на доработку</b>\n\nЗаказчик отправил на доработку: <b>${targetProject.title}</b>`;
+        }
+        if (message) await sendTelegramNotification(targetProject.user_id, message);
+      }
+    }
   };
 
   const handleCreateProject = async (e: React.FormEvent) => {
@@ -143,15 +195,13 @@ export default function App() {
 
     const { data, error } = await supabase
       .from('projects')
-      .insert([
-        {
+      .insert([{
           title: newTitle,
           client_name: newClient || 'Заказчик',
           status: 'In Progress',
           link: newLink || '#',
           user_id: userId || 'demo_user',
-        },
-      ])
+      }])
       .select();
 
     if (!error && data) {
@@ -163,83 +213,23 @@ export default function App() {
     }
   };
 
-  // === Обновленный handleStatusChange с вызовом уведомлений ===
-  const handleStatusChange = async (id: string, newStatus: Project['status']) => {
-    const { error } = await supabase
-      .from('projects')
-      .update({ status: newStatus })
-      .eq('id', id);
-
-    if (!error) {
-      // Ищем проект, чтобы знать его название и кому отправлять
-      const targetProject = clientProject || projects.find((p) => p.id === id);
-
-      if (clientProject) {
-        setClientProject({ ...clientProject, status: newStatus });
-      } else {
-        setProjects(
-          projects.map((p) => (p.id === id ? { ...p, status: newStatus } : p))
-        );
-      }
-
-      // Если статус поменял клиент - отправляем сообщение исполнителю
-      if (targetProject && clientProject) {
-        let message = '';
-        if (newStatus === 'Done') {
-          message = `✅ <b>Проект согласован!</b>\n\nЗаказчик принял проект: <b>${targetProject.title}</b>`;
-        } else if (newStatus === 'Review') {
-          message = `⚠️ <b>Проект возвращен на доработку</b>\n\nЗаказчик нажал кнопку у проекта: <b>${targetProject.title}</b>`;
-        }
-
-        if (message) {
-          await sendTelegramNotification(targetProject.user_id, message);
-        }
-      }
-    }
-  };
-
   const handleDeleteProject = async (id: string) => {
     const { error } = await supabase.from('projects').delete().eq('id', id);
-    if (!error) {
-      setProjects(projects.filter((p) => p.id !== id));
-    }
+    if (!error) setProjects(projects.filter((p) => p.id !== id));
   };
 
   const handleCopyLink = (id: string) => {
     const shareUrl = `${APP_DOMAIN}/?project=${id}`;
-
-    if (navigator.clipboard && window.isSecureContext) {
-      navigator.clipboard
-        .writeText(shareUrl)
-        .then(() => {
-          setCopiedId(id);
-          setTimeout(() => setCopiedId(null), 2000);
-        })
-        .catch(() => fallbackCopy(shareUrl, id));
-    } else {
-      fallbackCopy(shareUrl, id);
-    }
-  };
-
-  const fallbackCopy = (text: string, id: string) => {
-    try {
-      const textArea = document.createElement('textarea');
-      textArea.value = text;
-      document.body.appendChild(textArea);
-      textArea.select();
-      document.execCommand('copy');
-      document.body.removeChild(textArea);
+    navigator.clipboard.writeText(shareUrl).then(() => {
       setCopiedId(id);
       setTimeout(() => setCopiedId(null), 2000);
-    } catch (e) {
-      prompt('Скопируйте ссылку вручную:', text);
-    }
+    });
   };
 
-  // ==================== РЕЖИМ КЛИЕНТА ====================
+  // ==================== РЕЖИМ КЛИЕНТА (по ссылке) ====================
   if (clientProjectId) {
     return (
-      <div className="min-h-screen bg-slate-900 text-slate-100 p-4 font-sans select-none flex flex-col justify-center items-center">
+      <div className="min-h-screen bg-slate-900 text-slate-100 p-4 font-sans flex flex-col justify-center items-center">
         <div className="w-full max-w-md bg-slate-800/90 border border-slate-700/60 rounded-2xl p-6 shadow-xl">
           <div className="text-center mb-6">
             <span className="text-xs uppercase tracking-widest text-indigo-400 font-semibold block mb-1">
@@ -249,35 +239,18 @@ export default function App() {
           </div>
 
           {loading ? (
-            <div className="animate-pulse space-y-5">
-              <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700/50">
-                <div className="h-3 bg-slate-700/50 rounded w-1/4 mb-3"></div>
-                <div className="h-6 bg-slate-700/50 rounded w-3/4 mb-6"></div>
-                
-                <div className="h-3 bg-slate-700/50 rounded w-1/4 mb-3"></div>
-                <div className="h-4 bg-slate-700/50 rounded w-2/4 mb-6"></div>
-                
-                <div className="h-3 bg-slate-700/50 rounded w-1/4 mb-3"></div>
-                <div className="h-6 bg-slate-700/50 rounded-full w-1/3"></div>
-              </div>
-              
-              <div className="h-11 bg-slate-800/50 rounded-xl w-full border border-slate-700/50"></div>
-              <div className="h-11 bg-slate-800/50 rounded-xl w-full border border-slate-700/50 mt-2"></div>
+            <div className="animate-pulse space-y-4">
+              <div className="h-20 bg-slate-700/50 rounded-xl"></div>
+              <div className="h-10 bg-slate-700/50 rounded-xl"></div>
             </div>
           ) : !clientProject ? (
-            <div className="text-center py-6">
-              <p className="text-sm text-slate-300">Проект не найден или удален.</p>
-            </div>
+            <p className="text-center text-sm text-slate-300 py-6">Проект не найден.</p>
           ) : (
             <div className="space-y-5">
               <div className="bg-slate-900/60 p-4 rounded-xl border border-slate-800">
                 <p className="text-xs text-slate-400 mb-1">Проект:</p>
                 <h2 className="text-lg font-semibold text-white mb-3">{clientProject.title}</h2>
-
-                <p className="text-xs text-slate-400 mb-1">Заказчик:</p>
-                <p className="text-sm text-slate-200 mb-3">{clientProject.client_name}</p>
-
-                <p className="text-xs text-slate-400 mb-1">Текущий статус:</p>
+                <p className="text-xs text-slate-400 mb-1">Статус:</p>
                 <span
                   className={`inline-block text-xs px-2.5 py-1 rounded-full font-medium ${
                     clientProject.status === 'Review'
@@ -287,11 +260,7 @@ export default function App() {
                       : 'bg-blue-500/10 text-blue-400 border border-blue-500/20'
                   }`}
                 >
-                  {clientProject.status === 'Review'
-                    ? 'На согласовании'
-                    : clientProject.status === 'Done'
-                    ? 'Согласовано'
-                    : 'В работе'}
+                  {clientProject.status === 'Review' ? 'На согласовании' : clientProject.status === 'Done' ? 'Согласовано' : 'В работе'}
                 </span>
               </div>
 
@@ -305,6 +274,50 @@ export default function App() {
                   Открыть результат работы ↗
                 </a>
               )}
+
+              {/* Чат для клиента */}
+              <div className="pt-2 border-t border-slate-700/60">
+                <h3 className="text-xs font-semibold text-slate-400 uppercase mb-3">Комментарии и замечания</h3>
+                
+                <div className="space-y-2 max-h-48 overflow-y-auto mb-3 pr-1">
+                  {comments.length === 0 ? (
+                    <p className="text-xs text-slate-500 text-center py-2">Комментариев пока нет</p>
+                  ) : (
+                    comments.map((c) => (
+                      <div
+                        key={c.id}
+                        className={`p-3 rounded-xl text-xs ${
+                          c.author === 'client'
+                            ? 'bg-indigo-600/20 border border-indigo-500/30 text-indigo-200 ml-4'
+                            : 'bg-slate-700/50 border border-slate-600/40 text-slate-200 mr-4'
+                        }`}
+                      >
+                        <p className="font-semibold text-[10px] text-slate-400 mb-1">
+                          {c.author === 'client' ? 'Вы (Заказчик)' : 'Исполнитель'}
+                        </p>
+                        <p>{c.text}</p>
+                      </div>
+                    ))
+                  )}
+                </div>
+
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    placeholder="Напишите комментарий..."
+                    value={newCommentText}
+                    onChange={(e) => setNewCommentText(e.target.value)}
+                    className="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500"
+                  />
+                  <button
+                    onClick={() => handleSendComment('client', clientProject.id)}
+                    disabled={sendingComment}
+                    className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs px-3 py-2 rounded-xl font-medium transition-colors disabled:opacity-50"
+                  >
+                    Отправить
+                  </button>
+                </div>
+              </div>
 
               <div className="pt-2 space-y-2">
                 {clientProject.status !== 'Done' ? (
@@ -330,9 +343,9 @@ export default function App() {
     );
   }
 
-  // ==================== РЕЖИМ ИСПОЛНИТЕЛЯ ====================
+  // ==================== РЕЖИМ ИСПОЛНИТЕЛЯ (в Telegram) ====================
   return (
-    <div className="min-h-screen bg-slate-900 text-slate-100 p-4 font-sans select-none">
+    <div className="min-h-screen bg-slate-900 text-slate-100 p-4 font-sans">
       <header className="mb-6 flex justify-between items-center border-b border-slate-800 pb-4">
         <div>
           <h1 className="text-xl font-bold tracking-tight text-white">ClientFlow</h1>
@@ -354,7 +367,7 @@ export default function App() {
               onClick={() => setShowForm(true)}
               className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold px-3 py-2 rounded-lg transition-colors"
             >
-              + Новый проект
+              + Новый
             </button>
           </div>
 
@@ -363,30 +376,16 @@ export default function App() {
           ) : projects.length === 0 ? (
             <div className="bg-slate-800/40 border border-dashed border-slate-700/60 rounded-xl p-8 text-center">
               <p className="text-sm text-slate-400 mb-1">Проектов пока нет</p>
-              <p className="text-xs text-slate-500">Нажми «+ Новый проект», чтобы добавить первый</p>
+              <p className="text-xs text-slate-500">Нажми «+ Новый», чтобы добавить первый</p>
             </div>
           ) : (
             <div className="space-y-3">
               {projects.map((project) => (
-                <div
-                  key={project.id}
-                  className="bg-slate-800/80 border border-slate-700/60 rounded-xl p-4"
-                >
+                <div key={project.id} className="bg-slate-800/80 border border-slate-700/60 rounded-xl p-4">
                   <div className="flex justify-between items-start mb-2">
                     <h3 className="font-semibold text-base text-white pr-2">{project.title}</h3>
-
-                    <button
-                      onClick={() =>
-                        handleStatusChange(
-                          project.id,
-                          project.status === 'In Progress'
-                            ? 'Review'
-                            : project.status === 'Review'
-                            ? 'Done'
-                            : 'In Progress'
-                        )
-                      }
-                      className={`text-xs px-2.5 py-1 rounded-full font-medium transition-opacity active:opacity-75 ${
+                    <span
+                      className={`text-xs px-2.5 py-1 rounded-full font-medium ${
                         project.status === 'Review'
                           ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
                           : project.status === 'Done'
@@ -394,38 +393,29 @@ export default function App() {
                           : 'bg-blue-500/10 text-blue-400 border border-blue-500/20'
                       }`}
                     >
-                      {project.status === 'Review'
-                        ? 'На согласовании'
-                        : project.status === 'Done'
-                        ? 'Согласовано'
-                        : 'В работе'}
-                    </button>
+                      {project.status === 'Review' ? 'На согласовании' : project.status === 'Done' ? 'Согласовано' : 'В работе'}
+                    </span>
                   </div>
 
-                  <div className="text-xs text-slate-400 space-y-1 mt-3">
+                  <div className="text-xs text-slate-400 mb-4">
                     <p>Заказчик: <span className="text-slate-200">{project.client_name}</span></p>
-                    {project.link !== '#' && (
-                      <p className="truncate">
-                        Ссылка:{' '}
-                        <a
-                          href={project.link}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="text-indigo-400 underline"
-                        >
-                          {project.link}
-                        </a>
-                      </p>
-                    )}
                   </div>
 
-                  <div className="mt-4 pt-3 border-t border-slate-700/40 flex justify-between items-center">
-                    <button
-                      onClick={() => handleCopyLink(project.id)}
-                      className="text-xs font-medium text-indigo-400 hover:text-indigo-300 transition-colors"
-                    >
-                      {copiedId === project.id ? '✓ Ссылка скопирована' : 'Скопировать ссылку для клиента'}
-                    </button>
+                  <div className="pt-3 border-t border-slate-700/40 flex justify-between items-center">
+                    <div className="flex gap-3">
+                      <button
+                        onClick={() => toggleComments(project.id)}
+                        className="text-xs font-medium bg-slate-700/50 hover:bg-slate-700 px-3 py-1.5 rounded-lg transition-colors"
+                      >
+                        {expandedProjectId === project.id ? 'Скрыть чат' : 'Открыть чат'}
+                      </button>
+                      <button
+                        onClick={() => handleCopyLink(project.id)}
+                        className="text-xs font-medium text-indigo-400 hover:text-indigo-300 transition-colors px-1 py-1.5"
+                      >
+                        {copiedId === project.id ? '✓ Скопировано' : 'Ссылка клиенту'}
+                      </button>
+                    </div>
 
                     <button
                       onClick={() => handleDeleteProject(project.id)}
@@ -434,6 +424,52 @@ export default function App() {
                       Удалить
                     </button>
                   </div>
+
+                  {/* Чат для исполнителя (появляется при нажатии "Открыть чат") */}
+                  {expandedProjectId === project.id && (
+                    <div className="mt-4 pt-4 border-t border-slate-700/60">
+                      <h3 className="text-xs font-semibold text-slate-400 uppercase mb-3">Чат с заказчиком</h3>
+                      
+                      <div className="space-y-2 max-h-48 overflow-y-auto mb-3 pr-1">
+                        {comments.length === 0 ? (
+                          <p className="text-xs text-slate-500 text-center py-2">Комментариев пока нет</p>
+                        ) : (
+                          comments.map((c) => (
+                            <div
+                              key={c.id}
+                              className={`p-3 rounded-xl text-xs ${
+                                c.author === 'executor'
+                                  ? 'bg-indigo-600/20 border border-indigo-500/30 text-indigo-200 ml-4'
+                                  : 'bg-slate-700/50 border border-slate-600/40 text-slate-200 mr-4'
+                              }`}
+                            >
+                              <p className="font-semibold text-[10px] text-slate-400 mb-1">
+                                {c.author === 'executor' ? 'Вы' : 'Заказчик'}
+                              </p>
+                              <p>{c.text}</p>
+                            </div>
+                          ))
+                        )}
+                      </div>
+
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          placeholder="Ответить..."
+                          value={newCommentText}
+                          onChange={(e) => setNewCommentText(e.target.value)}
+                          className="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500"
+                        />
+                        <button
+                          onClick={() => handleSendComment('executor', project.id)}
+                          disabled={sendingComment}
+                          className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs px-3 py-2 rounded-xl font-medium transition-colors disabled:opacity-50"
+                        >
+                          Отправить
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -443,61 +479,22 @@ export default function App() {
         <main className="bg-slate-800/80 border border-slate-700/60 rounded-xl p-4">
           <div className="flex justify-between items-center mb-4">
             <h2 className="text-base font-semibold text-white">Новый проект</h2>
-            <button
-              onClick={() => setShowForm(false)}
-              className="text-xs text-slate-400 hover:text-white"
-            >
-              Отмена
-            </button>
+            <button onClick={() => setShowForm(false)} className="text-xs text-slate-400 hover:text-white">Отмена</button>
           </div>
-
           <form onSubmit={handleCreateProject} className="space-y-4">
             <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">
-                Название проекта *
-              </label>
-              <input
-                type="text"
-                required
-                placeholder="Редизайн сайта"
-                value={newTitle}
-                onChange={(e) => setNewTitle(e.target.value)}
-                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500"
-              />
+              <label className="block text-xs font-medium text-slate-300 mb-1">Название проекта *</label>
+              <input type="text" required value={newTitle} onChange={(e) => setNewTitle(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500" />
             </div>
-
             <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">
-                Имя заказчика
-              </label>
-              <input
-                type="text"
-                placeholder="@username или имя"
-                value={newClient}
-                onChange={(e) => setNewClient(e.target.value)}
-                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500"
-              />
+              <label className="block text-xs font-medium text-slate-300 mb-1">Имя заказчика</label>
+              <input type="text" value={newClient} onChange={(e) => setNewClient(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500" />
             </div>
-
             <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">
-                Ссылка на результат
-              </label>
-              <input
-                type="url"
-                placeholder="https://..."
-                value={newLink}
-                onChange={(e) => setNewLink(e.target.value)}
-                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500"
-              />
+              <label className="block text-xs font-medium text-slate-300 mb-1">Ссылка на результат</label>
+              <input type="url" value={newLink} onChange={(e) => setNewLink(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500" />
             </div>
-
-            <button
-              type="submit"
-              className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2.5 rounded-lg text-sm transition-colors mt-2"
-            >
-              Сохранить проект
-            </button>
+            <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2.5 rounded-lg text-sm transition-colors mt-2">Сохранить</button>
           </form>
         </main>
       )}
