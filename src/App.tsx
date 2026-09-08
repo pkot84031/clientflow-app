@@ -21,6 +21,9 @@ interface Project {
 const APP_DOMAIN = 'https://clientflow-app-indol.vercel.app';
 
 export default function App() {
+  // === Подтягиваем токен из .env ===
+  const BOT_TOKEN = import.meta.env.VITE_TELEGRAM_BOT_TOKEN;
+
   const [userName, setUserName] = useState<string>('Пользователь');
   const [userId, setUserId] = useState<string | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -36,6 +39,36 @@ export default function App() {
   const [newTitle, setNewTitle] = useState('');
   const [newClient, setNewClient] = useState('');
   const [newLink, setNewLink] = useState('');
+
+  // === Функция отправки уведомлений в Telegram ===
+  const sendTelegramNotification = async (chatId: string | undefined, text: string) => {
+    console.log("📢 Попытка отправить уведомление...");
+    console.log("🔑 Токен:", BOT_TOKEN ? "На месте" : "ПУСТО! (Переменная не подхватилась)");
+    console.log("👤 Telegram ID получателя:", chatId);
+
+    if (!BOT_TOKEN || !chatId || chatId === 'demo_user') {
+      console.warn("❌ Отмена: нет токена, нет ID или ID тестовый.");
+      return;
+    }
+
+    try {
+      const response = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: chatId,
+          text: text,
+          parse_mode: 'HTML',
+        }),
+      });
+
+      const result = await response.json();
+      console.log("📨 Ответ от Telegram сервера:", result);
+      
+    } catch (err) {
+      console.error('❌ Ошибка сети при отправке:', err);
+    }
+  };
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -66,7 +99,6 @@ export default function App() {
     }
   }, []);
 
-  // Загрузка одного проекта для клиента по ID
   const fetchSingleProject = async (id: string) => {
     setLoading(true);
     try {
@@ -86,7 +118,6 @@ export default function App() {
     }
   };
 
-  // Загрузка проектов текущего пользователя
   const fetchProjects = async (uid: string | null) => {
     setLoading(true);
     let query = supabase
@@ -94,7 +125,6 @@ export default function App() {
       .select('*')
       .order('created_at', { ascending: false });
 
-    // Если есть ID пользователя, фильтруем по нему
     if (uid) {
       query = query.eq('user_id', uid);
     }
@@ -133,6 +163,7 @@ export default function App() {
     }
   };
 
+  // === Обновленный handleStatusChange с вызовом уведомлений ===
   const handleStatusChange = async (id: string, newStatus: Project['status']) => {
     const { error } = await supabase
       .from('projects')
@@ -140,12 +171,29 @@ export default function App() {
       .eq('id', id);
 
     if (!error) {
+      // Ищем проект, чтобы знать его название и кому отправлять
+      const targetProject = clientProject || projects.find((p) => p.id === id);
+
       if (clientProject) {
         setClientProject({ ...clientProject, status: newStatus });
       } else {
         setProjects(
           projects.map((p) => (p.id === id ? { ...p, status: newStatus } : p))
         );
+      }
+
+      // Если статус поменял клиент - отправляем сообщение исполнителю
+      if (targetProject && clientProject) {
+        let message = '';
+        if (newStatus === 'Done') {
+          message = `✅ <b>Проект согласован!</b>\n\nЗаказчик принял проект: <b>${targetProject.title}</b>`;
+        } else if (newStatus === 'Review') {
+          message = `⚠️ <b>Проект возвращен на доработку</b>\n\nЗаказчик нажал кнопку у проекта: <b>${targetProject.title}</b>`;
+        }
+
+        if (message) {
+          await sendTelegramNotification(targetProject.user_id, message);
+        }
       }
     }
   };
@@ -188,7 +236,7 @@ export default function App() {
     }
   };
 
- // ==================== РЕЖИМ КЛИЕНТА ====================
+  // ==================== РЕЖИМ КЛИЕНТА ====================
   if (clientProjectId) {
     return (
       <div className="min-h-screen bg-slate-900 text-slate-100 p-4 font-sans select-none flex flex-col justify-center items-center">
