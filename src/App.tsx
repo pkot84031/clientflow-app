@@ -188,7 +188,7 @@ export default function App() {
     }
   };
 
-  // ==================== РЕЖИМ КЛИЕНТА ====================
+ // ==================== РЕЖИМ КЛИЕНТА ====================
   if (clientProjectId) {
     return (
       <div className="min-h-screen bg-slate-900 text-slate-100 p-4 font-sans select-none flex flex-col justify-center items-center">
@@ -201,7 +201,21 @@ export default function App() {
           </div>
 
           {loading ? (
-            <p className="text-xs text-slate-400 text-center py-6">Загрузка данных проекта...</p>
+            <div className="animate-pulse space-y-5">
+              <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700/50">
+                <div className="h-3 bg-slate-700/50 rounded w-1/4 mb-3"></div>
+                <div className="h-6 bg-slate-700/50 rounded w-3/4 mb-6"></div>
+                
+                <div className="h-3 bg-slate-700/50 rounded w-1/4 mb-3"></div>
+                <div className="h-4 bg-slate-700/50 rounded w-2/4 mb-6"></div>
+                
+                <div className="h-3 bg-slate-700/50 rounded w-1/4 mb-3"></div>
+                <div className="h-6 bg-slate-700/50 rounded-full w-1/3"></div>
+              </div>
+              
+              <div className="h-11 bg-slate-800/50 rounded-xl w-full border border-slate-700/50"></div>
+              <div className="h-11 bg-slate-800/50 rounded-xl w-full border border-slate-700/50 mt-2"></div>
+            </div>
           ) : !clientProject ? (
             <div className="text-center py-6">
               <p className="text-sm text-slate-300">Проект не найден или удален.</p>
