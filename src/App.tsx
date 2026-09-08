@@ -54,11 +54,21 @@ export default function App() {
   const [newLink, setNewLink] = useState('');
 
   // Отправка уведомления в Telegram
-  const sendTelegramNotification = async (chatId: string | undefined, text: string) => {
-    if (!BOT_TOKEN || !chatId || chatId === 'demo_user') return;
+ const sendTelegramNotification = async (chatId: string | undefined, text: string) => {
+    console.log("📢 Отправка уведомления...", { chatId, hasToken: !!BOT_TOKEN, text });
+    
+    if (!BOT_TOKEN) {
+      console.warn("❌ Ошибка: Не найден токен бота (VITE_TELEGRAM_BOT_TOKEN)");
+      return;
+    }
+    
+    if (!chatId || chatId === 'demo_user') {
+      console.warn("❌ Отмена: ID получателя отсутствует или это тестовый проект (demo_user)");
+      return;
+    }
 
     try {
-      await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+      const response = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -67,8 +77,10 @@ export default function App() {
           parse_mode: 'HTML',
         }),
       });
+      const result = await response.json();
+      console.log("📨 Ответ от Telegram:", result);
     } catch (err) {
-      console.error('Ошибка отправки уведомления:', err);
+      console.error('❌ Ошибка сети при обращении к Telegram API:', err);
     }
   };
 
